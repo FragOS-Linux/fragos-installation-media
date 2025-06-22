@@ -1,0 +1,181 @@
+#!/bin/bash
+set -euo pipefail
+
+TITLE="Zenkai Installer for FragOS"
+GITHUB_REPO="your-username/fragos"  # <- Zmień na swoje repozytorium GitHub
+
+# Sprawdzenie dostępności wymaganych narzędzi
+for cmd in whiptail curl jq parted mkfs.btrfs mkfs.fat mount umount tar bootctl; do
+    if ! command -v "$cmd" &>/dev/null; then
+        echo "Required tool '$cmd' is missing. Please install it before running the installer."
+        exit 1
+    fi
+done
+
+check_uefi() {
+    if [[ ! -d /sys/firmware/efi/efivars ]]; then
+        whiptail --title "$TITLE" --msgbox "Error: Installer supports only UEFI systems. BIOS/Legacy boot is not supported." 10 60
+        exit 1
+    fi
+}
+
+select_disk() {
+    local disk_list
+    disk_list=$(lsblk -dpno NAME,SIZE,TYPE | grep 'disk' | awk '{print $1 " " $2}')
+    local choices=()
+
+    while read -r line; do
+        local dev size
+        dev=$(echo "$line" | awk '{print $1}')
+        size=$(echo "$line" | awk '{print $2}')
+        choices+=("$dev" "$size")
+    done <<< "$disk_list"
+
+    DISK=$(whiptail --title "$TITLE" --menu "Select target disk for installation:" 20 78 10 "${choices[@]}" 3>&1 1>&2 2>&3) || exit 1
+}
+
+create_partition() {
+    whiptail --title "$TITLE" --yesno "All data on $DISK will be erased! Proceed with partitioning?" 10 60 || exit 1
+
+    parted --script "$DISK" mklabel gpt
+    parted --script "$DISK" mkpart ESP fat32 1MiB 513MiB
+    parted --script "$DISK" set 1 boot on
+    parted --script "$DISK" mkpart primary 513MiB 100%
+
+    ESP_PARTITION="${DISK}1"
+    ROOT_PARTITION="${DISK}2"
+
+    # Czekanie na pojawienie się partycji
+    for i in {1..5}; do
+        if [[ -b "$ESP_PARTITION" && -b "$ROOT_PARTITION" ]]; then
+            break
+        fi
+        sleep 1
+    done
+    if [[ ! -b "$ESP_PARTITION" || ! -b "$ROOT_PARTITION" ]]; then
+        whiptail --title "$TITLE" --msgbox "Partitions not found after creation." 10 60
+        exit 1
+    fi
+}
+
+format_partitions() {
+    whiptail --title "$TITLE" --infobox "Formatting partitions..." 8 50
+    mkfs.fat -F32 "$ESP_PARTITION"
+    mkfs.btrfs -f -L zenkai_root "$ROOT_PARTITION"
+}
+
+mount_and_create_subvolumes() {
+    MOUNT_POINT=$(mktemp -d)
+    mount "$ROOT_PARTITION" "$MOUNT_POINT"
+
+    btrfs subvolume create "$MOUNT_POINT"/zenkai_root
+    btrfs subvolume create "$MOUNT_POINT"/zenkai_root/var
+    btrfs subvolume create "$MOUNT_POINT"/zenkai_root/home
+
+    umount "$MOUNT_POINT"
+}
+
+fetch_release_parts() {
+    local API_URL="https://api.github.com/repos/$GITHUB_REPO/releases"
+    local response release assets
+
+    response=$(curl -s "$API_URL")
+
+    release=$(echo "$response" | jq -r '[.[] | select(.prerelease == false)][0].tag_name')
+
+    if [[ -z "$release" || "$release" == "null" ]]; then
+        release=$(echo "$response" | jq -r '[.[] | select(.prerelease == true)][0].tag_name')
+    fi
+
+    if [[ -z "$release" || "$release" == "null" ]]; then
+        whiptail --title "$TITLE" --msgbox "No FragOS release or pre-release found." 10 60
+        exit 1
+    fi
+
+    assets=$(curl -s "https://api.github.com/repos/$GITHUB_REPO/releases/tags/$release" | jq -r '.assets[] | select(.name | test(".*\\.img\\.part\\..*")) | .browser_download_url')
+
+    if [[ -z "$assets" ]]; then
+        whiptail --title "$TITLE" --msgbox "No FragOS split image parts found in release $release." 10 60
+        exit 1
+    fi
+
+    TEMP_DIR=$(mktemp -d)
+    cd "$TEMP_DIR"
+
+    whiptail --title "$TITLE" --infobox "Downloading FragOS split image parts..." 8 60
+
+    # Pobieranie i zapisywanie części w kolejności alfabetycznej
+    echo "$assets" | sort | while read -r url; do
+        curl -LO "$url"
+    done
+
+    # Łączenie fragmentów w fragos.img.tar.xz
+    cat fragos.img.part.* > fragos.img.tar.xz
+
+    FULL_IMG="$TEMP_DIR/fragos.img.tar.xz"
+}
+
+mount_subvolumes_and_deploy() {
+    MOUNT_POINT=$(mktemp -d)
+    mount -o subvol=zenkai_root "$ROOT_PARTITION" "$MOUNT_POINT"
+    mkdir -p "$MOUNT_POINT"/var "$MOUNT_POINT"/home
+
+    mount -o subvol=256 "$ROOT_PARTITION" "$MOUNT_POINT"/var
+    mount -o subvol=257 "$ROOT_PARTITION" "$MOUNT_POINT"/home
+
+    whiptail --title "$TITLE" --infobox "Extracting FragOS archive to root filesystem..." 8 60
+
+    tar -xJf "$FULL_IMG" -C "$MOUNT_POINT"/zenkai_root
+
+    umount "$MOUNT_POINT"/var
+    umount "$MOUNT_POINT"/home
+    umount "$MOUNT_POINT"
+    rmdir "$MOUNT_POINT"
+
+    rm -rf "$TEMP_DIR"
+}
+
+install_systemd_boot() {
+    whiptail --title "$TITLE" --infobox "Installing systemd-boot to EFI partition..." 8 50
+
+    mkdir -p /mnt/esp
+    mount "$ESP_PARTITION" /mnt/esp
+
+    bootctl --path=/mnt/esp install
+
+    cat > /mnt/esp/loader/loader.conf <<EOF
+default fragos
+timeout 3
+EOF
+
+    cat > /mnt/esp/loader/entries/fragos.conf <<EOF
+title   FragOS
+linux   /vmlinuz-linux
+initrd  /initramfs-linux.img
+options root=LABEL=zenkai_root rw
+EOF
+
+    umount /mnt/esp
+}
+
+main() {
+    check_uefi
+    select_disk
+    create_partition
+    format_partitions
+    mount_and_create_subvolumes
+    fetch_release_parts
+    mount_subvolumes_and_deploy
+    install_systemd_boot
+
+    whiptail --title "$TITLE" --msgbox "FragOS has been installed successfully on $ROOT_PARTITION.\n\nThe system will reboot in 10 seconds." 12 60
+
+    for i in $(seq 10 -1 1); do
+        echo "Rebooting in $i seconds..."
+        sleep 1
+    done
+
+    reboot
+}
+
+main

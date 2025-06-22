@@ -1,0 +1,9 @@
+[Unit]
+Description=FragOS System Installer.
+
+[Service]
+Type=simple
+ExecStart=/bin/bash zenkai-installer
+
+[Install]
+WantedBy=multi-user.target
