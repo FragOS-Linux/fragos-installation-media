@@ -13,4 +13,4 @@ docker pull archlinux:base-devel
 docker build --no-cache -f "${dockerfile}" -t fragos-install-builder ${work_dir}
 
 # make the container build the iso
-exec docker run --privileged --rm -v ${work_dir}:/root/fragosos -v $GITHUB_OUTPUT:$GITHUB_OUTPUT -e "GITHUB_OUTPUT=$GITHUB_OUTPUT" -h fragos-install-builder fragos-install-builder ./build-iso.sh
+exec docker run --privileged --rm -v ${work_dir}:/root/fragos -v $GITHUB_OUTPUT:$GITHUB_OUTPUT -e "GITHUB_OUTPUT=$GITHUB_OUTPUT" -h fragos-install-builder fragos-install-builder ./build-iso.sh
