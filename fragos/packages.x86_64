@@ -9,6 +9,7 @@ dhcpcd
 diffutils
 dosfstools
 efibootmgr
+edk2-shell
 git
 intel-ucode
 jq
@@ -26,6 +27,5 @@ usbutils
 wget
 zsh
 networkmanager
-syslinux
 memtest86+
 memtest86+-efi
