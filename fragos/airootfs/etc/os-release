@@ -1,0 +1,7 @@
+NAME="FragOS"
+PRETTY_NAME="FragOS"
+ID=fragos
+ID_LIKE=arch
+ANSI_COLOR="1;36"
+HOME_URL="https://fragos.github.io"
+BUG_REPORT_URL="https://github.com/FragOS-Linux/fragos/issues"
