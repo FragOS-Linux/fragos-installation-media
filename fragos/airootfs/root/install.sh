@@ -232,7 +232,6 @@ if [ -d ${SYS_CONN_DIR} ] && [ -n "$(ls -A ${SYS_CONN_DIR})" ]; then
 fi
 
 
-export SHOW_UI=1
 zenkai-deploy fragos-linux/fragos:${TARGET}
 RESULT=$?
 
